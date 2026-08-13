@@ -8,6 +8,10 @@ import {type Terrain} from '../render/terrain.ts';
 import {type Texture} from './texture.ts';
 import type {StyleLayer} from '../style/style_layer.ts';
 import {ImageSource} from '../source/image_source.ts';
+import {
+    isCustomTerrainDrapeLayer,
+    type CustomStyleLayer,
+} from '../style/style_layer/custom_style_layer.ts';
 
 /**
  * lookup table which layers should rendered to texture
@@ -20,6 +24,23 @@ const LAYERS_TO_TEXTURES: { [keyof in StyleLayer['type']]?: boolean } = {
     hillshade: true,
     'color-relief': true
 };
+
+function layerRendersToTexture(layer: StyleLayer): boolean {
+    return !!(LAYERS_TO_TEXTURES[layer.type] || isCustomTerrainDrapeLayer(layer));
+}
+
+/** Mercator world bounds [minX,minY,maxX,maxY] for an overscaled tile (0..1 per world + wrap). */
+function tileMercatorBounds(tileID: OverscaledTileID): [number, number, number, number] {
+    const {x, y, z} = tileID.canonical;
+    const tiles = Math.pow(2, z);
+    const wrap = tileID.wrap;
+    return [
+        x / tiles + wrap,
+        y / tiles,
+        (x + 1) / tiles + wrap,
+        (y + 1) / tiles,
+    ];
+}
 
 /**
  * @internal
@@ -88,7 +109,7 @@ export class RenderToTexture {
         for (const layerId of this._renderableLayerIds) {
             const layer = style._layers[layerId];
             const source = layer.source;
-            if (source && LAYERS_TO_TEXTURES[layer.type]) rttSourceIds.add(source);
+            if (source && layerRendersToTexture(layer)) rttSourceIds.add(source);
         }
 
         this._coordsAscending = {};
@@ -145,21 +166,25 @@ export class RenderToTexture {
         const type = layer.type;
         const painter = this.painter;
         const isLastLayer = this._renderableLayerIds[this._renderableLayerIds.length - 1] === layer.id;
+        const thisToTexture = layerRendersToTexture(layer);
+        const prevToTexture = this._prevType != null && (
+            !!LAYERS_TO_TEXTURES[this._prevType as StyleLayer['type']] || this._prevType === 'custom-drape'
+        );
 
-        // remember background, fill, line & raster layer to render into a stack
-        if (LAYERS_TO_TEXTURES[type]) {
+        // remember background, fill, line, raster, and drapable custom layers for a stack
+        if (thisToTexture) {
             // create a new stack if previous layer was not rendered to texture (f.e. symbols)
-            if (!this._prevType || !LAYERS_TO_TEXTURES[this._prevType]) this._stacks.push([]);
+            if (!this._prevType || !prevToTexture) this._stacks.push([]);
             // push current render-to-texture layer to render-stack
-            this._prevType = type;
+            this._prevType = isCustomTerrainDrapeLayer(layer) ? 'custom-drape' : type;
             this._stacks[this._stacks.length - 1].push(layer.id);
             // rendering is done later, all in once
             if (!isLastLayer) return true;
         }
 
         // in case a stack is finished render all collected stack-layers into a texture
-        if (LAYERS_TO_TEXTURES[this._prevType] || (LAYERS_TO_TEXTURES[type] && isLastLayer)) {
-            this._prevType = type;
+        if (prevToTexture || (thisToTexture && isLastLayer)) {
+            this._prevType = isCustomTerrainDrapeLayer(layer) ? 'custom-drape' : type;
             const stack = this._stacks.length - 1, layers = this._stacks[stack] || [];
             for (const tile of this._renderableTiles) {
                 this._rttTiles.push(tile);
@@ -170,21 +195,62 @@ export class RenderToTexture {
                 painter.context.clear({color: Color.transparent, stencil: 0});
                 painter.currentStencilSource = undefined;
                 for (const layerId of layers) {
-                    const layer = painter.style._layers[layerId];
-                    const coords = layer.source ? this._coordsAscending[layer.source][tile.tileID.key] : [tile.tileID];
+                    const stackLayer = painter.style._layers[layerId];
                     painter.context.viewport.set([0, 0, this.rttSize, this.rttSize]);
-                    painter.renderTileClippingMasks(layer, coords, true);
-                    painter.renderLayer(painter, painter.style.tileManagers[layer.source], layer, coords, options);
-                    if (layer.source) tile.rttFingerprint[layer.source] = this._rttFingerprints[layer.source][tile.tileID.key];
+
+                    if (isCustomTerrainDrapeLayer(stackLayer)) {
+                        this._drawCustomToTile(stackLayer as CustomStyleLayer, tile);
+                        continue;
+                    }
+
+                    const coords = stackLayer.source ? this._coordsAscending[stackLayer.source][tile.tileID.key] : [tile.tileID];
+                    painter.renderTileClippingMasks(stackLayer, coords, true);
+                    painter.renderLayer(painter, painter.style.tileManagers[stackLayer.source], stackLayer, coords, options);
+                    if (stackLayer.source) tile.rttFingerprint[stackLayer.source] = this._rttFingerprints[stackLayer.source][tile.tileID.key];
                 }
             }
             drawTerrain(this.painter, this.terrain, this._rttTiles, options);
             this._rttTiles = [];
 
-            return LAYERS_TO_TEXTURES[type];
+            return thisToTexture;
         }
 
         return false;
+    }
+
+    private _drawCustomToTile(layer: CustomStyleLayer, tile: Tile): void {
+        const impl = layer.implementation;
+        if (!impl.renderToTile) return;
+
+        const painter = this.painter;
+        const context = painter.context;
+        const tileID = tile.tileID;
+
+        painter.setCustomLayerDefaults();
+        context.setColorMode(painter.colorModeForRenderPass());
+
+        impl.renderToTile(context.gl, {
+            tileID: {
+                key: tileID.key,
+                wrap: tileID.wrap,
+                overscaledZ: tileID.overscaledZ,
+                canonical: {
+                    x: tileID.canonical.x,
+                    y: tileID.canonical.y,
+                    z: tileID.canonical.z,
+                },
+            },
+            mercatorBounds: tileMercatorBounds(tileID),
+            rttSize: this.rttSize,
+        });
+
+        context.setDirty();
+        painter.setBaseState();
+        // Re-bind RTT FBO in case the custom layer changed framebuffer bindings.
+        const stack = this._stacks.length - 1;
+        const obj = tile.getRTT(stack);
+        if (obj) painter.bindRTT(obj);
+        painter.context.viewport.set([0, 0, this.rttSize, this.rttSize]);
     }
 
 }

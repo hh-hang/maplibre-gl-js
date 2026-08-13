@@ -58,6 +58,10 @@ export function drawCustom(painter: Painter, tileManager: TileManager, layer: Cu
             painter.setBaseState();
         }
     } else if (painter.renderPass === 'translucent') {
+        // Terrain draping for this custom layer is handled by RenderToTexture.renderToTile.
+        if (painter.renderToTexture && implementation.terrainDrape && implementation.renderToTile) {
+            return;
+        }
 
         painter.setCustomLayerDefaults();
 

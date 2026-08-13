@@ -168,6 +168,39 @@ export type CustomRenderMethodInput = {
 export type CustomRenderMethod = (gl: WebGL2RenderingContext, options: CustomRenderMethodInput) => void;
 
 /**
+ * Arguments passed when a custom layer is asked to draw into a terrain RTT tile framebuffer.
+ * The GL framebuffer and viewport are already bound to the tile texture (`rttSize` × `rttSize`).
+ * Draw with a **2D orthographic** projection covering `mercatorBounds` — do not use the camera
+ * `mainMatrix` from {@link CustomRenderMethodInput}.
+ */
+export type CustomRenderToTileMethodInput = {
+    /**
+     * Terrain / RTT tile id (canonical XYZ + wrap + key).
+     */
+    tileID: {
+        key: string;
+        wrap: number;
+        overscaledZ: number;
+        canonical: {x: number; y: number; z: number};
+    };
+    /**
+     * Tile extent in web-mercator world units `[minX, minY, maxX, maxY]`.
+     * `[0,0]` is NW of the world, `[1,1]` is SE (plus `wrap` for world copies).
+     */
+    mercatorBounds: [number, number, number, number];
+    /**
+     * Bound RTT texture / viewport size in pixels.
+     */
+    rttSize: number;
+};
+
+/**
+ * @param gl - The map's gl context (RTT FBO already bound).
+ * @param options - Tile orthographic draw inputs.
+ */
+export type CustomRenderToTileMethod = (gl: WebGL2RenderingContext, options: CustomRenderToTileMethodInput) => void;
+
+/**
  * Interface for custom style layers. This is a specification for
  * implementers to model: it is not an exported method or class.
  *
@@ -253,6 +286,19 @@ export interface CustomLayerInterface {
      */
     renderingMode?: '2d' | '3d';
     /**
+     * When `true` and {@link CustomLayerInterface.renderToTile} is implemented, this layer is
+     * included in the terrain render-to-texture stack and draped onto the DEM mesh like
+     * `fill` / `line`. While terrain is enabled, the normal {@link CustomLayerInterface.render}
+     * pass is skipped for this layer to avoid double-drawing.
+     */
+    terrainDrape?: boolean;
+    /**
+     * Draw this layer into the currently bound terrain RTT tile framebuffer using a 2D
+     * orthographic projection over {@link CustomRenderToTileMethodInput.mercatorBounds}.
+     * Required for terrain draping when {@link CustomLayerInterface.terrainDrape} is `true`.
+     */
+    renderToTile?: CustomRenderToTileMethod;
+    /**
      * Called during a render frame allowing the layer to draw into the GL context.
      *
      * The layer can assume blending and depth state is set to allow the layer to properly
@@ -311,7 +357,18 @@ export function validateCustomStyleLayer(layerObject: CustomLayerInterface): Val
         errors.push(new ValidationError(`layers.${id}`, null, 'property "renderingMode" must be either "2d" or "3d"'));
     }
 
+    if (layerObject.terrainDrape && typeof layerObject.renderToTile !== 'function') {
+        errors.push(new ValidationError(`layers.${id}`, null, 'property "terrainDrape" requires method "renderToTile"'));
+    }
+
     return errors;
+}
+
+/** Whether this custom layer should participate in terrain RTT draping. */
+export function isCustomTerrainDrapeLayer(layer: StyleLayer): boolean {
+    if (layer.type !== 'custom') return false;
+    const impl = (layer as CustomStyleLayer).implementation;
+    return !!(impl?.terrainDrape && typeof impl.renderToTile === 'function');
 }
 
 export const isCustomStyleLayer = (layer: StyleLayer): layer is CustomStyleLayer => layer.type === 'custom';
