@@ -1,6 +1,6 @@
 {
-    "name": "@hh-hang/maplibre-gl",
-    "description": "BSD licensed community fork of mapbox-gl, a WebGL interactive maps library",
+    "name": "@hh-hang/maplibre-gl-custom-terrain-drape",
+    "description": "Unofficial fork based on MapLibre GL JS 6.2.0 with custom terrain draping; not affiliated with or endorsed by MapLibre",
     "version": "6.2.0-terrain-drape.1",
     "publishConfig": {
         "access": "public"
@@ -8,14 +8,14 @@
     "module": "dist/maplibre-gl.mjs",
     "style": "dist/maplibre-gl.css",
     "license": "BSD-3-Clause",
-    "homepage": "https://maplibre.org/",
+    "homepage": "https://github.com/hh-hang/maplibre-gl-js#readme",
     "funding": "https://github.com/maplibre/maplibre-gl-js?sponsor=1",
     "bugs": {
-        "url": "https://github.com/maplibre/maplibre-gl-js/issues/"
+        "url": "https://github.com/hh-hang/maplibre-gl-js/issues"
     },
     "repository": {
         "type": "git",
-        "url": "https://github.com/maplibre/maplibre-gl-js"
+        "url": "git+https://github.com/hh-hang/maplibre-gl-js.git"
     },
     "types": "dist/maplibre-gl.d.ts",
     "type": "module",
