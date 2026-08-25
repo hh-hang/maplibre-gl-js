@@ -73,9 +73,9 @@ export class RenderToTexture {
      */
     _stacks: string[][];
     /**
-     * remember the previous processed layer to check if a new stack is needed
+     * Whether the previous processed renderable layer belongs to an RTT stack.
      */
-    _prevType: string;
+    _previousLayerRendersToTexture: boolean;
     /**
      * a list of tiles that can potentially rendered
      */
@@ -100,16 +100,21 @@ export class RenderToTexture {
 
     prepareForRender(style: Style, zoom: number): void {
         this._stacks = [];
-        this._prevType = null;
+        this._previousLayerRendersToTexture = false;
         this._rttTiles = [];
         this._renderableTiles = this.terrain.tileManager.getRenderableTiles();
         this._renderableLayerIds = style._order.filter(id => !style._layers[id].isHidden(zoom));
 
         const rttSourceIds = new Set<string>();
+        const customDrapeRevisions = new Map<string, number>();
         for (const layerId of this._renderableLayerIds) {
             const layer = style._layers[layerId];
             const source = layer.source;
             if (source && layerRendersToTexture(layer)) rttSourceIds.add(source);
+            if (isCustomTerrainDrapeLayer(layer)) {
+                const revision = layer.implementation.terrainDrapeRevision ?? 0;
+                customDrapeRevisions.set(layer.id, revision);
+            }
         }
 
         this._coordsAscending = {};
@@ -145,6 +150,17 @@ export class RenderToTexture {
                     tile.releaseRTT(this.painter);
                 }
             }
+            for (const [layerId, revision] of customDrapeRevisions) {
+                if (tile.rttObjects.length > 0 && tile.rttCustomLayerRevision[layerId] !== revision) {
+                    tile.releaseRTT(this.painter);
+                }
+            }
+            for (const layerId of Object.keys(tile.rttCustomLayerRevision)) {
+                if (!customDrapeRevisions.has(layerId)) {
+                    tile.releaseRTT(this.painter);
+                    delete tile.rttCustomLayerRevision[layerId];
+                }
+            }
         }
     }
 
@@ -163,28 +179,25 @@ export class RenderToTexture {
         if (layer.isHidden(this.painter.transform.zoom)) return false;
 
         const options: RenderOptions = {...renderOptions, isRenderingToTexture: true};
-        const type = layer.type;
         const painter = this.painter;
         const isLastLayer = this._renderableLayerIds[this._renderableLayerIds.length - 1] === layer.id;
         const thisToTexture = layerRendersToTexture(layer);
-        const prevToTexture = this._prevType != null && (
-            !!LAYERS_TO_TEXTURES[this._prevType as StyleLayer['type']] || this._prevType === 'custom-drape'
-        );
+        const previousToTexture = this._previousLayerRendersToTexture;
 
         // remember background, fill, line, raster, and drapable custom layers for a stack
         if (thisToTexture) {
             // create a new stack if previous layer was not rendered to texture (f.e. symbols)
-            if (!this._prevType || !prevToTexture) this._stacks.push([]);
+            if (!previousToTexture) this._stacks.push([]);
             // push current render-to-texture layer to render-stack
-            this._prevType = isCustomTerrainDrapeLayer(layer) ? 'custom-drape' : type;
+            this._previousLayerRendersToTexture = true;
             this._stacks[this._stacks.length - 1].push(layer.id);
             // rendering is done later, all in once
             if (!isLastLayer) return true;
         }
 
         // in case a stack is finished render all collected stack-layers into a texture
-        if (prevToTexture || (thisToTexture && isLastLayer)) {
-            this._prevType = isCustomTerrainDrapeLayer(layer) ? 'custom-drape' : type;
+        if (previousToTexture || (thisToTexture && isLastLayer)) {
+            this._previousLayerRendersToTexture = thisToTexture;
             const stack = this._stacks.length - 1, layers = this._stacks[stack] || [];
             for (const tile of this._renderableTiles) {
                 this._rttTiles.push(tile);
@@ -199,7 +212,7 @@ export class RenderToTexture {
                     painter.context.viewport.set([0, 0, this.rttSize, this.rttSize]);
 
                     if (isCustomTerrainDrapeLayer(stackLayer)) {
-                        this._drawCustomToTile(stackLayer as CustomStyleLayer, tile);
+                        this._drawCustomToTile(stackLayer, tile);
                         continue;
                     }
 
@@ -215,6 +228,7 @@ export class RenderToTexture {
             return thisToTexture;
         }
 
+        this._previousLayerRendersToTexture = false;
         return false;
     }
 
@@ -243,6 +257,7 @@ export class RenderToTexture {
             mercatorBounds: tileMercatorBounds(tileID),
             rttSize: this.rttSize,
         });
+        tile.rttCustomLayerRevision[layer.id] = impl.terrainDrapeRevision ?? 0;
 
         context.setDirty();
         painter.setBaseState();

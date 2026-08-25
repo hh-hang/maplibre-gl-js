@@ -293,6 +293,14 @@ export interface CustomLayerInterface {
      */
     terrainDrape?: boolean;
     /**
+     * Revision of the content produced by {@link CustomLayerInterface.renderToTile}.
+     * Increment this value whenever the draped output changes. MapLibre uses it to
+     * invalidate cached terrain textures for this layer.
+     *
+     * Defaults to `0`.
+     */
+    terrainDrapeRevision?: number;
+    /**
      * Draw this layer into the currently bound terrain RTT tile framebuffer using a 2D
      * orthographic projection over {@link CustomRenderToTileMethodInput.mercatorBounds}.
      * Required for terrain draping when {@link CustomLayerInterface.terrainDrape} is `true`.
@@ -361,11 +369,16 @@ export function validateCustomStyleLayer(layerObject: CustomLayerInterface): Val
         errors.push(new ValidationError(`layers.${id}`, null, 'property "terrainDrape" requires method "renderToTile"'));
     }
 
+    if (layerObject.terrainDrapeRevision !== undefined &&
+        (!Number.isSafeInteger(layerObject.terrainDrapeRevision) || layerObject.terrainDrapeRevision < 0)) {
+        errors.push(new ValidationError(`layers.${id}`, null, 'property "terrainDrapeRevision" must be a non-negative safe integer'));
+    }
+
     return errors;
 }
 
 /** Whether this custom layer should participate in terrain RTT draping. */
-export function isCustomTerrainDrapeLayer(layer: StyleLayer): boolean {
+export function isCustomTerrainDrapeLayer(layer: StyleLayer): layer is CustomStyleLayer {
     if (layer.type !== 'custom') return false;
     const impl = (layer as CustomStyleLayer).implementation;
     return !!(impl?.terrainDrape && typeof impl.renderToTile === 'function');

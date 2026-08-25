@@ -130,6 +130,8 @@ export class Tile {
      */
     rttObjects: Array<RTTObject | undefined>;
     rttFingerprint: {[sourceId:string]: string};
+    /** Last terrain-drape revision rendered for each custom layer. */
+    rttCustomLayerRevision: {[layerId:string]: number};
 
     featureStateRevision: number;
 
@@ -150,6 +152,7 @@ export class Tile {
         this.dependencies = {};
         this.rttObjects = [];
         this.rttFingerprint = {};
+        this.rttCustomLayerRevision = {};
 
         // Counts the number of times a response was already expired when
         // received. We're using this to add a delay when making a new request

@@ -18,6 +18,21 @@ describe('validateCustomStyleLayer', () => {
         ]);
         expect(errors.map(({severity}) => severity)).toEqual(['error', 'error', 'error']);
     });
+
+    test('validates terrain drape requirements and revision', () => {
+        const errors = validateCustomStyleLayer({
+            id: 'custom',
+            type: 'custom',
+            render() {},
+            terrainDrape: true,
+            terrainDrapeRevision: -1,
+        });
+
+        expect(errors.map(({message}) => message)).toEqual([
+            'layers.custom: property "terrainDrape" requires method "renderToTile"',
+            'layers.custom: property "terrainDrapeRevision" must be a non-negative safe integer',
+        ]);
+    });
 });
 
 describe('CustomStyleLayer', () => {

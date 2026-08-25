@@ -18,6 +18,7 @@ import {type HillshadeStyleLayer} from '../style/style_layer/hillshade_style_lay
 import {type BackgroundStyleLayer} from '../style/style_layer/background_style_layer.ts';
 import {DepthMode} from '../webgl/depth_mode.ts';
 import {createNullGL} from '../util/test/null_gl.ts';
+import {CustomStyleLayer} from '../style/style_layer/custom_style_layer.ts';
 
 describe('render to texture', () => {
     const gl = createNullGL();
@@ -75,6 +76,8 @@ describe('render to texture', () => {
         acquireRTT: (size: number) => ({texture: {}, size}),
         bindRTT: vi.fn(),
         releaseRTT: vi.fn(),
+        setCustomLayerDefaults: vi.fn(),
+        setBaseState: vi.fn(),
         drawFunctions: {
             terrainDepth: vi.fn(),
             terrainCoords: vi.fn(),
@@ -126,6 +129,9 @@ describe('render to texture', () => {
     beforeEach(() => {
         tile.rttObjects.length = 0;
         tile.rttFingerprint = {};
+        tile.rttCustomLayerRevision = {};
+        style._order = ['maine-fill', 'maine-symbol'];
+        delete style._layers['custom-drape'];
     });
 
     test('should call painter with overlay tiles for terrain tile', () => {
@@ -263,6 +269,91 @@ describe('render to texture', () => {
 
         expect(acquireSpy).not.toHaveBeenCalled();
         expect(tile.getRTT(0)).toBe(cached);
+    });
+
+    test('renders a drapable custom layer through the terrain RTT stack', () => {
+        const render = vi.fn();
+        const renderToTile = vi.fn();
+        const customLayer = new CustomStyleLayer({
+            id: 'custom-drape',
+            type: 'custom',
+            terrainDrape: true,
+            render,
+            renderToTile,
+        }, {});
+        style._order = ['custom-drape', 'maine-symbol'];
+        style._layers['custom-drape'] = customLayer;
+        rtt.prepareForRender(style, 0);
+
+        const renderOptions = {isRenderingToTexture: false, isRenderingGlobe: false};
+        expect(rtt.renderLayer(customLayer, renderOptions)).toBe(true);
+        expect(rtt.renderLayer(symbolLayer, renderOptions)).toBe(false);
+
+        expect(render).not.toHaveBeenCalled();
+        expect(renderToTile).toHaveBeenCalledExactlyOnceWith(gl, expect.objectContaining({
+            tileID: expect.objectContaining({key: tile.tileID.key}),
+            mercatorBounds: [0.25, 0.5, 0.5, 0.75],
+            rttSize: rtt.rttSize,
+        }));
+    });
+
+    test('invalidates custom terrain textures when the layer revision changes', () => {
+        const renderToTile = vi.fn();
+        const implementation = {
+            id: 'custom-drape',
+            type: 'custom' as const,
+            terrainDrape: true,
+            terrainDrapeRevision: 0,
+            render() {},
+            renderToTile,
+        };
+        const customLayer = new CustomStyleLayer(implementation, {});
+        style._order = ['custom-drape', 'maine-symbol'];
+        style._layers['custom-drape'] = customLayer;
+        const renderOptions = {isRenderingToTexture: false, isRenderingGlobe: false};
+
+        rtt.prepareForRender(style, 0);
+        rtt.renderLayer(customLayer, renderOptions);
+        rtt.renderLayer(symbolLayer, renderOptions);
+        expect(renderToTile).toHaveBeenCalledTimes(1);
+
+        rtt.prepareForRender(style, 0);
+        rtt.renderLayer(customLayer, renderOptions);
+        rtt.renderLayer(symbolLayer, renderOptions);
+        expect(renderToTile).toHaveBeenCalledTimes(1);
+
+        implementation.terrainDrapeRevision = 1;
+        rtt.prepareForRender(style, 0);
+        expect(tile.getRTT(0)).toBeUndefined();
+
+        rtt.renderLayer(customLayer, renderOptions);
+        rtt.renderLayer(symbolLayer, renderOptions);
+        expect(renderToTile).toHaveBeenCalledTimes(2);
+        expect(tile.rttCustomLayerRevision['custom-drape']).toBe(1);
+    });
+
+    test('invalidates cached terrain textures when a custom drape layer is hidden', () => {
+        const customLayer = new CustomStyleLayer({
+            id: 'custom-drape',
+            type: 'custom',
+            terrainDrape: true,
+            render() {},
+            renderToTile() {},
+        }, {});
+        style._order = ['maine-fill', 'custom-drape', 'maine-symbol'];
+        style._layers['custom-drape'] = customLayer;
+        const renderOptions = {isRenderingToTexture: false, isRenderingGlobe: false};
+
+        rtt.prepareForRender(style, 0);
+        for (const layerId of style._order) rtt.renderLayer(style._layers[layerId], renderOptions);
+        expect(tile.getRTT(0)).toBeTruthy();
+        expect(tile.rttCustomLayerRevision['custom-drape']).toBe(0);
+
+        vi.spyOn(customLayer, 'isHidden').mockReturnValue(true);
+        rtt.prepareForRender(style, 0);
+
+        expect(tile.getRTT(0)).toBeUndefined();
+        expect(tile.rttCustomLayerRevision['custom-drape']).toBeUndefined();
     });
 
     test('prepare only queries sources rendered to texture', () => {
